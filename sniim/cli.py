@@ -1,7 +1,7 @@
 import click
 import datetime
 from pyfiglet import Figlet
-from sniim.scrappers.agriculture import ScrapperMarketAgriculture
+from sniim.scrappers.agriculture import AgricultureMarketScrapper
 from sniim.scrappers.livestock import ScrapperMarketLiveStock
 from clint.textui import puts, colored, indent
 
@@ -12,7 +12,7 @@ puts(colored.magenta("FECHA: {}".format(datetime.datetime.today().strftime('%Y/%
 @click.command()
 @click.option('--historial/--no-historial', default=False)
 def parse(historial):
-    agriculture_scrapper = ScrapperMarketAgriculture(is_historic=historial)
+    agriculture_scrapper = AgricultureMarketScrapper(is_historic=historial)
     livestock_scrapper = ScrapperMarketLiveStock(is_historic=historial)
 
     total_records = 0
@@ -21,7 +21,7 @@ def parse(historial):
     puts(colored.green("Iniciando scrapeo de Precios de Central de Abastos".upper()))
     with indent(4, quote='>>>>'):
         puts(colored.blue(" Scrapper: Productos Agricolas"))
-        agriculture_scrapper.scraping()
+        agriculture_scrapper.scrape()
 
         with indent(4, quote='>>>>'):
             puts(colored.green(" Resultados"))

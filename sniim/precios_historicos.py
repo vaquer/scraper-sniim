@@ -1,10 +1,11 @@
 import re
 import sys
 import csv
-from bs4 import BeautifulSoup
-import urllib.request
-from urllib.error import HTTPError
 import logging
+import urllib.request
+from bs4 import BeautifulSoup
+from urllib.error import HTTPError
+
 
 def creaTabla(url,archivo_salida,paginacion,categoria):
     print (url,paginacion,categoria)

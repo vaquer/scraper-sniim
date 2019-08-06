@@ -1,138 +1,159 @@
-import datetime
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 from sniim.db.mongo import Mongoclient
 from clint.textui import puts, colored, indent
 
 
-class ScrapperMarketAgriculture:
-    total_records = 0
-    inserted_records = 0
-
-    base_url = 'http://www.economia-sniim.gob.mx/NUEVO/Consultas/MercadosNacionales/PreciosDeMercado/Agricolas'
-    init_urls = [
-        ['Frutas y Hortalizas', '/ConsultaFrutasYHortalizas.aspx', '/ResultadosConsultaFechaFrutasYHortalizas.aspx'],
-        ['Flores', '/ConsultaFlores.aspx?SubOpcion=5', '/ResultadosConsultaFechaFlores.aspx'],
-        ['Granos', '/ConsultaGranos.aspx?SubOpcion=6', '/ResultadosConsultaFechaGranos.aspx'],
-        ['Aceites', '/ConsultaAceites.aspx?SubOpcion=8', '/ResultadosConsultaFechaAceites.aspx']
+BASE_SNIIM_URL = 'http://www.economia-sniim.gob.mx/NUEVO/Consultas/MercadosNacionales/PreciosDeMercado/Agricolas'
+BASE_CATEGORIES = [
+    [
+        'Frutas y Hortalizas',
+        '/ConsultaFrutasYHortalizas.aspx',
+        '/ResultadosConsultaFechaFrutasYHortalizas.aspx'
+    ],
+    [
+        'Flores',
+        '/ConsultaFlores.aspx?SubOpcion=5',
+        '/ResultadosConsultaFechaFlores.aspx'
+    ],
+    [
+        'Granos',
+        '/ConsultaGranos.aspx?SubOpcion=6',
+        '/ResultadosConsultaFechaGranos.aspx'
+    ],
+    [
+        'Aceites',
+        '/ConsultaAceites.aspx?SubOpcion=8',
+        '/ResultadosConsultaFechaAceites.aspx'
     ]
+]
 
-    def __init__(self, *args, **kwargs):
-        self.is_historic = kwargs.get('is_historic', True)
-        self.mongo = Mongoclient(db_collection='agricultura')
 
-    def read_category(self, category, url, url_form):
-        category_page = requests.get(self.base_url + url)
-        category_page = BeautifulSoup(category_page.content, features="html.parser")
+BASE_SCHEMA = (
+    'fecha',
+    'presentacion',
+    'origen',
+    'destino',
+    'precio_min',
+    'precio_max',
+    'precio_frec',
+    'obs',
+    'producto'
+)
 
-        products = [(product.getText(), product['value'], ) for product in category_page.select_one('select#ddlProducto').find_all('option')]
+
+class DateRangeException(Exception):
+    pass
+
+
+class CategoryException(Exception):
+    pass
+
+
+
+class AgricultureMarketScrapper:
+    base_url = BASE_SNIIM_URL
+
+    def __init__(self, category_url=None, prices_url=None, custom_schema=None):
+        self.total_records = 0
+        self.inserted_records = 0
+
+        if not category_url:
+            raise CategoryException('Invalid url: The category url can not be None')
+
+        self.category_url = category_url
+
+        if not prices_url:
+            raise CategoryException('Invalid url: The prices url can not be None')
+
+        self.prices_url = prices_url
+
+        if not custom_schema:
+            self.data_schema = BASE_SCHEMA
+
+    def scrape(self, start_date=None, end_date=None):
+        self.total_records = 0
+        self.inserted_records = 0
+
+        if not start_date:
+            raise DateRangeException('Date range invalid: The start date most be datetime object not None')
+
+        if not end_date:
+            raise DateRangeException('Date range invalid: The end date most be datetime object not None')
+
+        return self.get_category_products_information(start_date, end_date)
+
+    def get_category_products_information(self, start_date, end_date):
+        prices = []
+        category_page_response = requests.get(self.base_url + self.category_url)
+
+        category_page = BeautifulSoup(
+            category_page_response.content,
+            features="html.parser"
+        )
+
+        html_product_list = category_page.select_one('select#ddlProducto').find_all('option')
+        products = [(product.getText(), product['value'],) for product in html_product_list]
 
         for product in products:
             product_name, product_id = product
+
             if product_id == '-1':
                 continue
 
             with indent(4):
                 puts(colored.magenta("Producto: {}".format(str(product_name))))
 
-            if self.is_historic:
-                for year in range(1999, 2019):
-                    payload = {
-                        'fechaInicio':'01/01/{0}'.format(str(year)),
-                        'fechaFinal':'01/01/{0}'.format(str(year + 1)),
-                        'ProductoId':product_id,
-                        'OrigenId':'-1',
-                        'Origen':'Todos',
-                        'DestinoId':'-1',
-                        'Destino':'Todos',
-                        'PreciosPorId':'2',
-                        'RegistrosPorPagina':'1000'
-                    }
+            # today = datetime.today()
+            # start_date = today - timedelta(days=3)
 
-                    if not self.gather_prices(payload, url_form):
-                        next
-            else:
-                today = datetime.datetime.today()
-                deleta = datetime.timedelta(days=-1)
-                payload = {
-                        'fechaInicio':'{}'.format(today.strftime('%d/%m/%Y')),
-                        'fechaFinal':'{}'.format((today).strftime('%d/%m/%Y')),
-                        'ProductoId':product_id,
-                        'OrigenId':'-1',
-                        'Origen':'Todos',
-                        'DestinoId':'-1',
-                        'Destino':'Todos',
-                        'PreciosPorId':'2',
-                        'RegistrosPorPagina':'1000'
-                    }
+            prices.extend(
+                list(
+                    self.get_product_prices(
+                        product_id,
+                        product_name,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                )
+            )
 
-                if not self.gather_prices(payload, url_form):
-                    continue
+        return prices
 
-        return
+    def get_product_prices(self, product_id, product_name, start_date=datetime.now(),
+            end_date=datetime.now(), prices_per_id='2', rows_per_page='1000', destiny_id='-1'):
 
-    def scraping(self):
-        self.total_records = 0
-        self.inserted_records = 0
+        get_params = {
+            'fechaInicio': start_date.strftime('%d/%m/%Y'),
+            'fechaFinal': end_date.strftime('%d/%m/%Y'),
+            'ProductoId': product_id,
+            'OrigenId': '-1',
+            'Origen': 'Todos',
+            'DestinoId': destiny_id,
+            'Destino': 'Todos',
+            'PreciosPorId': prices_per_id,
+            'RegistrosPorPagina': rows_per_page
+        }
 
-        for category, url, url_form in self.init_urls:
-            self.read_category(category, url, url_form)
+        prices_response = requests.get(
+            '{0}{1}'.format(self.base_url, self.prices_url),
+            params=get_params
+        )
 
-    def gather_prices(self, payload, url_form):
-        with indent(4):
-            puts(colored.blue("Peticion: {}".format(str(payload))))
+        if prices_response.status_code != 200:
+            return []
 
-        response = requests.get(self.base_url + url_form, params=payload)
+        html_prices = BeautifulSoup(prices_response.content, features="html.parser")
+        table_prices = html_prices.select_one('table#tblResultados')
 
-        if response.status_code != 200:
-            with indent(4):
-                puts(colored.red("Error en la peticion HTTP: {}".format(str(response.text))))
-            return False
+        # Traversing all the raws in the table
+        for index_table, observation in enumerate(table_prices.find_all('tr')):
+            print(index_table)
+            if index_table > 1:
+                td_enumerate = enumerate(observation.find_all('td'))
+                price_row = {self.data_schema[metric_index]: metric.getText() for metric_index, metric in td_enumerate}
+                price_row['producto'] = product_name
+                self.total_records += 1
 
-        product_prices = BeautifulSoup(response.content, features="html.parser")
-
-        # pagination = product_prices.select_one('span#lblPaginacion').getText().split(' ')[-1]
-
-        try:
-            table_prices = product_prices.select_one('table#tblResultados')
-        except Exception as error:
-            with indent(4):
-                puts(colored.red("Error en el parseo: {}".format(str(error))))
-            return False
-
-        fields = ('fecha', 'presentacion', 'origen', 'destino', 'precio_min', 'precio_max', 'precio_frec', 'obs')
-        counter_row = 0
-
-        # print(table_prices)
-        for observation in table_prices.find_all('tr'):
-            if counter_row > 1:
-                row = {}
-                counter_field = 0
-
-                for metric in observation.find_all('td'):
-                    row[fields[counter_field]] = metric.getText()
-                    counter_field += 1
-
-                with indent(4):
-                    puts(colored.yellow("Insertando: {}".format(str(row))))
-
-                if self.mongo.insert_one(row):
-                    self.inserted_records += 1
-                    with indent(4):
-                        puts(colored.green("Insertado: {}".format(str(row))))
-                else:
-                    with indent(4):
-                        puts(colored.red("No Insertado: {}".format(str(row))))
-
-            self.total_records += 1
-            counter_row += 1
-
-        return True
-
-
-# if __name__ == '__main__':
-#     # agricola = ScrapperMarketAgriculture()
-#     # agricola.scraping()
-
-#     vacas = ScrapperMarketLiveStock()
-#     vacas.scraping()
+                yield price_row
